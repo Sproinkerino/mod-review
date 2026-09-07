@@ -1,5 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import EvidenceBlock from './EvidenceBlock';
+import ReportView from './ReportView';
+import { computeTopSubreddits, computeTopDownvoted } from '../lib/timeline';
 
 const SUGGESTED_QUESTIONS = [
   'Any rule violations here?',
@@ -18,8 +20,13 @@ export default function ChatScreen({
   onChipClick,
   thinking,
   onNewLookup,
+  report,
+  reportLoading,
+  reportError,
 }) {
   const threadRef = useRef(null);
+  const topSubreddits = useMemo(() => computeTopSubreddits(subject.items), [subject.items]);
+  const topDownvoted = useMemo(() => computeTopDownvoted(subject.items), [subject.items]);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
@@ -47,6 +54,16 @@ export default function ChatScreen({
       </header>
 
       <div className="message-thread" ref={threadRef}>
+        <ReportView
+          topSubreddits={topSubreddits}
+          topDownvoted={topDownvoted}
+          report={report}
+          loading={reportLoading}
+          error={reportError}
+        />
+
+        <h2 className="followup-heading">Follow-up questions</h2>
+
         {messages.map((msg, i) => (
           <div key={i}>
             <div className={`message message-${msg.role}`}>

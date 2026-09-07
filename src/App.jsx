@@ -3,7 +3,7 @@ import SearchScreen from './components/SearchScreen';
 import ChatScreen from './components/ChatScreen';
 import AuthGateModal from './components/AuthGateModal';
 import { runLookup, ArchiveUnreachableError } from './lib/arcticShift';
-import { requestAnswer } from './lib/llm';
+import { requestAnswer, requestReport } from './lib/llm';
 import { QUOTA_ENABLED, FREE_LOOKUPS } from './lib/config';
 
 const USERNAME_RE = /^[A-Za-z0-9_-]{3,20}$/;
@@ -31,6 +31,9 @@ export default function App() {
   const [lookupsUsed, setLookupsUsed] = useState(0);
   const [authed, setAuthed] = useState(false);
   const [gateOpen, setGateOpen] = useState(false);
+  const [report, setReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
@@ -63,13 +66,23 @@ export default function App() {
         {
           role: 'assistant',
           text: result.items.length
-            ? `Retrieved ${result.items.length} item${result.items.length === 1 ? '' : 's'} spanning ${result.span}. Ask me anything about this history.`
+            ? `Retrieved ${result.items.length} item${result.items.length === 1 ? '' : 's'} spanning ${result.span}. The report above covers the highlights -- ask me anything else about this history.`
             : 'No public history was found for this account. There is nothing to ask about yet.',
         },
       ]);
       setStage('chat');
       setFromDeepLink(false);
       window.history.replaceState(null, '', `/u/${encodeURIComponent(username.trim())}`);
+
+      if (result.items.length) {
+        setReport(null);
+        setReportError(false);
+        setReportLoading(true);
+        requestReport(result)
+          .then(setReport)
+          .catch(() => setReportError(true))
+          .finally(() => setReportLoading(false));
+      }
     } catch (err) {
       if (err instanceof ArchiveUnreachableError) {
         setError(true);
@@ -125,6 +138,9 @@ export default function App() {
     setDraft('');
     setError(false);
     setFromDeepLink(false);
+    setReport(null);
+    setReportError(false);
+    setReportLoading(false);
     window.history.replaceState(null, '', '/');
   }
 
@@ -150,6 +166,9 @@ export default function App() {
           onChipClick={handleAsk}
           thinking={thinking}
           onNewLookup={handleNewLookup}
+          report={report}
+          reportLoading={reportLoading}
+          reportError={reportError}
         />
       )}
 

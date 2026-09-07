@@ -36,6 +36,23 @@ Rules you must follow:
 Respond with ONLY a JSON object, no markdown fencing, in exactly this shape:
 {"text": "<1-3 sentence answer to the moderator's question>", "evidence": [{"rule": "<which rule this violates>", "excerpt": "<verbatim excerpt from the item>", "link": "<permalink>", "when": "<human-readable date>", "severity": "high" | "medium" | "low"}]}`;
 
+const REPORT_SYSTEM_PROMPT = `You are an assistant helping a subreddit moderator review a user's public post/comment history. You are shown a chronological timeline of that user's own posts and comments. Produce two lists for a moderation report.
+
+1. selfDescribed -- statements where the user explicitly describes their OWN occupation or income, in first person, in their own words (e.g. "I work as a nurse", "I made $80k last year"). This must be a direct self-statement about themselves.
+   - Do NOT infer occupation or income from subreddit membership, jargon, writing style, or any indirect signal.
+   - Do NOT guess or estimate a number or job title that isn't explicitly stated by the user about themselves.
+   - If you are not certain an excerpt is an explicit first-person self-statement of the user's own job or income, leave it out.
+   - It is normal and expected for this list to be empty most of the time. An empty list is the correct, honest answer when nothing qualifies -- do not stretch to fill it.
+
+2. topOffensive -- up to 5 items that most clearly violate this rule set: ${DEFAULT_RULES.map((r) => `"${r}"`).join(', ')}. Rank most severe first. Do not invent additional rules. If nothing violates the rule set, return an empty list -- do not manufacture a flag to seem useful.
+
+Every item in both lists MUST cite the exact permalink and timestamp it came from, and the excerpt must be verbatim from the timeline, not paraphrased.
+
+Do not diagnose, psychoanalyse, or speculate about the user's identity, location, politics, or mental state beyond what the text explicitly says. Do not recommend a moderation action.
+
+Respond with ONLY a JSON object, no markdown fencing, in exactly this shape:
+{"selfDescribed": [{"excerpt": "<verbatim>", "link": "<permalink>", "when": "<human-readable date>"}], "topOffensive": [{"rule": "<which rule>", "excerpt": "<verbatim>", "link": "<permalink>", "when": "<human-readable date>", "severity": "high" | "medium" | "low"}]}`;
+
 function buildTimelineText(items) {
   let text = '';
   let count = 0;
@@ -51,6 +68,43 @@ function buildTimelineText(items) {
   return { text, count };
 }
 
+async function callModel(systemPrompt, userPrompt) {
+  const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 1536,
+      temperature: 0.2,
+      system: systemPrompt,
+      messages: [
+        { role: 'user', content: userPrompt },
+        // Prefill the assistant turn to force a bare JSON object -- Claude
+        // continues from here rather than wrapping it in prose/markdown.
+        { role: 'assistant', content: '{' },
+      ],
+    }),
+  });
+
+  if (!upstream.ok) {
+    const errText = await upstream.text();
+    console.error('Anthropic error', upstream.status, errText);
+    throw new Error('upstream_failed');
+  }
+
+  const data = await upstream.json();
+  const raw = '{' + (data?.content?.[0]?.text ?? '');
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 app.post('/analyze', async (req, res) => {
   if (!ANTHROPIC_API_KEY) {
     return res.status(500).json({ error: 'Server is not configured with an Anthropic API key.' });
@@ -62,53 +116,41 @@ app.post('/analyze', async (req, res) => {
   }
 
   const { text: timelineText, count } = buildTimelineText(subject.items);
-
   const userPrompt = `Moderator's question: "${question}"\n\nTimeline (${count} of ${subject.items.length} items shown, most relevant/recent first):\n\n${timelineText || '(no items)'}`;
 
   try {
-    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 1024,
-        temperature: 0.2,
-        system: SYSTEM_PROMPT,
-        messages: [
-          { role: 'user', content: userPrompt },
-          // Prefill the assistant turn to force a bare JSON object -- Claude
-          // continues from here rather than wrapping it in prose/markdown.
-          { role: 'assistant', content: '{' },
-        ],
-      }),
-    });
-
-    if (!upstream.ok) {
-      const errText = await upstream.text();
-      console.error('Anthropic error', upstream.status, errText);
-      return res.status(502).json({ error: 'Upstream model request failed.' });
-    }
-
-    const data = await upstream.json();
-    const raw = '{' + (data?.content?.[0]?.text ?? '');
-
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = { text: raw.trim() || 'The model did not return a usable answer.', evidence: [] };
-    }
-
+    let parsed = await callModel(SYSTEM_PROMPT, userPrompt);
+    if (!parsed) parsed = { text: 'The model did not return a usable answer.', evidence: [] };
     if (!Array.isArray(parsed.evidence)) parsed.evidence = [];
     if (typeof parsed.text !== 'string') parsed.text = 'Nothing to flag here.';
-
     res.json(parsed);
   } catch (err) {
     console.error('analyze failed', err);
+    res.status(502).json({ error: 'Failed to reach the model provider.' });
+  }
+});
+
+app.post('/report', async (req, res) => {
+  if (!ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: 'Server is not configured with an Anthropic API key.' });
+  }
+
+  const { subject } = req.body ?? {};
+  if (!subject?.items) {
+    return res.status(400).json({ error: 'subject.items is required.' });
+  }
+
+  const { text: timelineText, count } = buildTimelineText(subject.items);
+  const userPrompt = `Timeline (${count} of ${subject.items.length} items shown, most recent first):\n\n${timelineText || '(no items)'}`;
+
+  try {
+    let parsed = await callModel(REPORT_SYSTEM_PROMPT, userPrompt);
+    if (!parsed) parsed = { selfDescribed: [], topOffensive: [] };
+    if (!Array.isArray(parsed.selfDescribed)) parsed.selfDescribed = [];
+    if (!Array.isArray(parsed.topOffensive)) parsed.topOffensive = [];
+    res.json(parsed);
+  } catch (err) {
+    console.error('report failed', err);
     res.status(502).json({ error: 'Failed to reach the model provider.' });
   }
 });
