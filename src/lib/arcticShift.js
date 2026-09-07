@@ -7,8 +7,8 @@ export class ArchiveUnreachableError extends Error {
   }
 }
 
-const POSTS_URL = 'https://arctic-shift.photonreddit.com/api/posts/search';
-const COMMENTS_URL = 'https://arctic-shift.photonreddit.com/api/comments/search';
+const POSTS_URL = 'https://arctic-shift.photon-reddit.com/api/posts/search';
+const COMMENTS_URL = 'https://arctic-shift.photon-reddit.com/api/comments/search';
 const PAGE_LIMIT = 100;
 // Safety cap so a very active account can't hang the tab paginating
 // forever. 20 pages * 100/page = up to 2000 items per content type.
@@ -70,8 +70,8 @@ function normalize(raw, type) {
 // ============================================================================
 // runLookup() -- Arctic Shift retrieval (live)
 //
-//   https://arctic-shift.photonreddit.com/api/posts/search?author=<username>
-//   https://arctic-shift.photonreddit.com/api/comments/search?author=<username>
+//   https://arctic-shift.photon-reddit.com/api/posts/search?author=<username>
+//   https://arctic-shift.photon-reddit.com/api/comments/search?author=<username>
 //
 // No API key required. Paginates on created_utc via after/before, sorted
 // ascending, and merges posts + comments into one chronological timeline.
