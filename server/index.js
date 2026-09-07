@@ -57,6 +57,57 @@ Do not diagnose, psychoanalyse, or speculate about the user's identity, location
 Respond with ONLY a JSON object, no markdown fencing, in exactly this shape:
 {"selfDescribed": [{"excerpt": "<verbatim>", "link": "<permalink>", "when": "<human-readable date>"}], "topOffensive": [{"rule": "<which rule>", "excerpt": "<verbatim>", "link": "<permalink>", "when": "<human-readable date>", "severity": "high" | "medium" | "low"}]}`;
 
+const SELECT_SYSTEM_PROMPT = `You are a selection step in a two-stage review pipeline. A second, more careful step will read the FULL TEXT of only the items you select -- your job is just to point it at the right ones, from a compact index (id|type|subreddit|date|score|snippet) of a Reddit user's post/comment history.
+
+You are given a focus describing what the second step needs to look at. Return the ids of every item that is plausibly relevant to that focus.
+
+- Prioritize recall over precision. If an item might be relevant, include it -- the second step will read the full text and can discard it if it turns out not to matter. Do not under-select.
+- If the focus is broad (e.g. general rule violations, or "summarise activity"), return a representative spread across subreddits and time rather than just the newest few.
+- If the focus is narrow (e.g. a specific topic), only include items that plausibly relate to it.
+- Return at most {{MAX_SELECTED}} ids, ranked most relevant first.
+
+Respond with ONLY a JSON object, no markdown fencing, in exactly this shape:
+{"ids": ["<id>", "<id>", ...]}`;
+
+// Compact per-item line for the selector pass: id|type|subreddit|date|score|snippet.
+// Deliberately much smaller than the full item text so the selector can see
+// the entire fetched set (even at DEFAULT_COMMENT_CAP=500) in one call.
+function buildCompactIndex(items) {
+  return items
+    .map((item) => {
+      const when = new Date(item.created_utc * 1000).toISOString().slice(0, 10);
+      const snippet = `${item.title ? item.title + ' -- ' : ''}${item.body || ''}`
+        .replace(/\s+/g, ' ')
+        .slice(0, 160);
+      return `${item.id}|${item.type}|r/${item.subreddit}|${when}|score:${item.score}|${snippet}`;
+    })
+    .join('\n');
+}
+
+// Sub-agent: picks which items are worth sending full-text to the real
+// analysis call, instead of blindly truncating by recency/char count. Runs
+// over a compact index so it can see the whole fetched set even when that's
+// hundreds of items. Falls back to recency-based selection (the old
+// behaviour) if the selector call fails or the history is small enough
+// that filtering isn't worth the extra round trip.
+async function selectRelevantItems(items, focus, maxSelected) {
+  if (items.length <= maxSelected) return items;
+
+  try {
+    const prompt = SELECT_SYSTEM_PROMPT.replace('{{MAX_SELECTED}}', String(maxSelected));
+    const userPrompt = `Focus: "${focus}"\n\nCompact index (${items.length} items):\n\n${buildCompactIndex(items)}`;
+    const parsed = await callModel(prompt, userPrompt);
+    const ids = new Set(Array.isArray(parsed?.ids) ? parsed.ids : []);
+    if (!ids.size) throw new Error('empty_selection');
+    const selected = items.filter((i) => ids.has(i.id));
+    if (selected.length) return selected;
+    throw new Error('no_matches');
+  } catch (err) {
+    console.error('selectRelevantItems fallback to recency:', err.message);
+    return [...items].sort((a, b) => b.created_utc - a.created_utc).slice(0, maxSelected);
+  }
+}
+
 function buildTimelineText(items) {
   let text = '';
   let count = 0;
@@ -119,10 +170,11 @@ app.post('/analyze', async (req, res) => {
     return res.status(400).json({ error: 'question and subject.items are required.' });
   }
 
-  const { text: timelineText, count } = buildTimelineText(subject.items);
-  const userPrompt = `Moderator's question: "${question}"\n\nTimeline (${count} of ${subject.items.length} items shown, most relevant/recent first):\n\n${timelineText || '(no items)'}`;
-
   try {
+    const relevant = await selectRelevantItems(subject.items, question, 60);
+    const { text: timelineText, count } = buildTimelineText(relevant);
+    const userPrompt = `Moderator's question: "${question}"\n\nTimeline (${count} of ${subject.items.length} total items retrieved, selected for relevance to the question):\n\n${timelineText || '(no items)'}`;
+
     let parsed = await callModel(SYSTEM_PROMPT, userPrompt);
     if (!parsed) parsed = { text: 'The model did not return a usable answer.', evidence: [] };
     if (!Array.isArray(parsed.evidence)) parsed.evidence = [];
@@ -144,10 +196,13 @@ app.post('/report', async (req, res) => {
     return res.status(400).json({ error: 'subject.items is required.' });
   }
 
-  const { text: timelineText, count } = buildTimelineText(subject.items);
-  const userPrompt = `Timeline (${count} of ${subject.items.length} items shown, most recent first):\n\n${timelineText || '(no items)'}`;
-
   try {
+    const focus =
+      'content revealing (a) the user explicitly stating their own job, occupation, or income about themselves in first person, or (b) content that may violate rules: harassment, hate speech, threats, spam/self-promotion, doxxing, ban evasion';
+    const relevant = await selectRelevantItems(subject.items, focus, 80);
+    const { text: timelineText, count } = buildTimelineText(relevant);
+    const userPrompt = `Timeline (${count} of ${subject.items.length} total items retrieved, selected for relevance to the report):\n\n${timelineText || '(no items)'}`;
+
     let parsed = await callModel(REPORT_SYSTEM_PROMPT, userPrompt);
     if (!parsed) parsed = { selfDescribed: [], topOffensive: [] };
     if (!Array.isArray(parsed.selfDescribed)) parsed.selfDescribed = [];

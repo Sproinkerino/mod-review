@@ -10,17 +10,40 @@ export class ArchiveUnreachableError extends Error {
 const POSTS_URL = 'https://arctic-shift.photon-reddit.com/api/posts/search';
 const COMMENTS_URL = 'https://arctic-shift.photon-reddit.com/api/comments/search';
 const PAGE_LIMIT = 100;
-// Safety cap so a very active account can't hang the tab paginating
-// forever. 20 pages * 100/page = up to 2000 items per content type.
-const MAX_PAGES = 20;
 const REQUEST_TIMEOUT_MS = 15000;
 
-async function fetchPage(baseUrl, username, after) {
+// Default retrieval caps. Most moderation questions are about recent
+// behaviour, and a smaller default keeps lookups fast and keeps the
+// backend's selector pass (server/index.js) working over a manageable
+// index. Comments get a much bigger allowance than posts since most
+// accounts comment far more often than they post.
+const DEFAULT_POST_CAP = 20;
+const DEFAULT_COMMENT_CAP = 500;
+
+// Fetches most-recent-first up to `cap` items (paginating backwards in
+// batches of PAGE_LIMIT), rather than the full history.
+async function fetchRecent(baseUrl, username, cap) {
+  const items = [];
+  let before;
+  while (items.length < cap) {
+    const pageSize = Math.min(PAGE_LIMIT, cap - items.length);
+    const pageItems = await fetchPageDesc(baseUrl, username, before, pageSize);
+    if (!pageItems.length) break;
+    items.push(...pageItems);
+    const last = pageItems[pageItems.length - 1];
+    if (!last?.created_utc) break;
+    before = last.created_utc;
+    if (pageItems.length < pageSize) break;
+  }
+  return items.slice(0, cap);
+}
+
+async function fetchPageDesc(baseUrl, username, before, pageSize) {
   const url = new URL(baseUrl);
   url.searchParams.set('author', username);
-  url.searchParams.set('limit', String(PAGE_LIMIT));
-  url.searchParams.set('sort', 'asc');
-  if (after) url.searchParams.set('after', String(after));
+  url.searchParams.set('limit', String(pageSize));
+  url.searchParams.set('sort', 'desc');
+  if (before) url.searchParams.set('before', String(before));
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -32,21 +55,6 @@ async function fetchPage(baseUrl, username, after) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function fetchAll(baseUrl, username) {
-  const items = [];
-  let after;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const pageItems = await fetchPage(baseUrl, username, after);
-    if (!pageItems.length) break;
-    items.push(...pageItems);
-    const last = pageItems[pageItems.length - 1];
-    if (!last?.created_utc) break;
-    after = last.created_utc + 1;
-    if (pageItems.length < PAGE_LIMIT) break;
-  }
-  return items;
 }
 
 function toPermalink(permalink) {
@@ -73,9 +81,10 @@ function normalize(raw, type) {
 //   https://arctic-shift.photon-reddit.com/api/posts/search?author=<username>
 //   https://arctic-shift.photon-reddit.com/api/comments/search?author=<username>
 //
-// No API key required. Paginates on created_utc via after/before, sorted
-// ascending, and merges posts + comments into one chronological timeline.
-// Retains subreddit, title, body/selftext, score, created_utc, permalink.
+// No API key required. Fetches the most recent DEFAULT_COMMENT_CAP comments
+// and DEFAULT_POST_CAP posts (not the full history -- see the module
+// comment above), merged into one chronological timeline. Retains
+// subreddit, title, body/selftext, score, created_utc, permalink.
 //
 // On timeout/network/HTTP error this throws ArchiveUnreachableError rather
 // than returning an empty item list -- the caller renders "archive
@@ -87,8 +96,8 @@ export async function runLookup(username) {
   let posts, comments;
   try {
     [posts, comments] = await Promise.all([
-      fetchAll(POSTS_URL, username),
-      fetchAll(COMMENTS_URL, username),
+      fetchRecent(POSTS_URL, username, DEFAULT_POST_CAP),
+      fetchRecent(COMMENTS_URL, username, DEFAULT_COMMENT_CAP),
     ]);
   } catch (err) {
     if (err instanceof ArchiveUnreachableError) throw err;
