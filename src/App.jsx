@@ -102,9 +102,16 @@ export default function App() {
     setDraft('');
     setThinking(true);
     try {
-      // INTEGRATION POINT: requestAnswer() -- see src/lib/llm.js
       const answer = await requestAnswer(question, subject);
       setMessages((m) => [...m, { role: 'assistant', text: answer.text, evidence: answer.evidence }]);
+    } catch {
+      setMessages((m) => [
+        ...m,
+        {
+          role: 'assistant',
+          text: 'The analysis backend is unavailable right now. Try again in a moment.',
+        },
+      ]);
     } finally {
       setThinking(false);
     }
