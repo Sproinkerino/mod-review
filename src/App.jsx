@@ -4,8 +4,8 @@ import ChatScreen from './components/ChatScreen';
 import AuthGateModal from './components/AuthGateModal';
 import { runLookup, ArchiveUnreachableError } from './lib/arcticShift';
 import { requestAnswer } from './lib/llm';
+import { QUOTA_ENABLED, FREE_LOOKUPS } from './lib/config';
 
-const FREE_LOOKUPS = 1;
 const USERNAME_RE = /^[A-Za-z0-9_-]{3,20}$/;
 
 function parseUsernameFromLocation() {
@@ -82,7 +82,8 @@ export default function App() {
   }
 
   function handlePullHistory() {
-    const needsAuth = !authed && (fromDeepLink || lookupsUsed >= FREE_LOOKUPS);
+    const needsAuth =
+      !authed && (fromDeepLink || (QUOTA_ENABLED && lookupsUsed >= FREE_LOOKUPS));
     if (needsAuth) {
       setGateOpen(true);
       return;

@@ -1,4 +1,4 @@
-const FREE_LOOKUPS = 1;
+import { QUOTA_ENABLED, FREE_LOOKUPS } from '../lib/config';
 
 export default function SearchScreen({
   username,
@@ -24,7 +24,7 @@ export default function SearchScreen({
   return (
     <div className="screen search-screen">
       <div className="top-bar">
-        <span className="quota-indicator">{quotaLabel}</span>
+        {QUOTA_ENABLED && <span className="quota-indicator">{quotaLabel}</span>}
       </div>
 
       <div className="search-center">
