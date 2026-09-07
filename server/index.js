@@ -3,7 +3,7 @@ import cors from 'cors';
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -11,9 +11,13 @@ const MODEL = 'claude-haiku-4-5-20251001';
 // Cap how much timeline we send per request. Full context-aware chunking
 // (map-reduce over multiple chunks for very large histories) is not
 // implemented in this pass -- for now we just take the most recent items
-// up to a character budget, which covers typical moderation cases.
-const MAX_ITEMS = 200;
-const MAX_CHARS = 40000;
+// up to a character budget. claude-haiku-4-5 has a 200K token context
+// window (~4 chars/token), so this budget leaves generous headroom for
+// the system prompt and output while covering large accounts. Previously
+// this was 40K chars, which silently truncated to a small fraction of a
+// very active user's history.
+const MAX_ITEMS = 3000;
+const MAX_CHARS = 500000;
 
 const DEFAULT_RULES = [
   'Harassment or personal attacks directed at another user',
