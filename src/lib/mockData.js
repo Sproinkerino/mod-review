@@ -1,5 +1,6 @@
-// Deterministic mock dataset used until runLookup() / requestAnswer() are
-// wired to real services. See lib/arcticShift.js and lib/llm.js.
+// Deterministic mock dataset used by the still-mocked requestAnswer() in
+// lib/llm.js. runLookup() (lib/arcticShift.js) now hits the real Arctic
+// Shift API and no longer uses this file.
 //
 // Timestamps are generated relative to "now" (days-ago offsets) rather than
 // hardcoded, so the date span always looks current instead of drifting into
@@ -78,13 +79,3 @@ export const MOCK_ITEMS = [
     permalink: 'https://reddit.com/r/houseplants/comments/b7c8d9/repotting_schedule/',
   },
 ];
-
-export function computeSpan(items) {
-  if (!items.length) return null;
-  const times = items.map((i) => i.created_utc).sort((a, b) => a - b);
-  const fmt = (t) =>
-    new Date(t * 1000).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-  const start = fmt(times[0]);
-  const end = fmt(times[times.length - 1]);
-  return start === end ? start : `${start} - ${end}`;
-}
