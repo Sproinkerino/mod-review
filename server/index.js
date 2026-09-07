@@ -5,8 +5,8 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const MODEL = 'anthropic/claude-haiku-4.5';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const MODEL = 'claude-haiku-4-5-20251001';
 
 // Cap how much timeline we send per request. Full context-aware chunking
 // (map-reduce over multiple chunks for very large histories) is not
@@ -52,8 +52,8 @@ function buildTimelineText(items) {
 }
 
 app.post('/analyze', async (req, res) => {
-  if (!OPENROUTER_API_KEY) {
-    return res.status(500).json({ error: 'Server is not configured with an OpenRouter API key.' });
+  if (!ANTHROPIC_API_KEY) {
+    return res.status(500).json({ error: 'Server is not configured with an Anthropic API key.' });
   }
 
   const { question, subject } = req.body ?? {};
@@ -66,31 +66,35 @@ app.post('/analyze', async (req, res) => {
   const userPrompt = `Moderator's question: "${question}"\n\nTimeline (${count} of ${subject.items.length} items shown, most relevant/recent first):\n\n${timelineText || '(no items)'}`;
 
   try {
-    const upstream = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    const upstream = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: MODEL,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: userPrompt },
-        ],
-        response_format: { type: 'json_object' },
+        max_tokens: 1024,
         temperature: 0.2,
+        system: SYSTEM_PROMPT,
+        messages: [
+          { role: 'user', content: userPrompt },
+          // Prefill the assistant turn to force a bare JSON object -- Claude
+          // continues from here rather than wrapping it in prose/markdown.
+          { role: 'assistant', content: '{' },
+        ],
       }),
     });
 
     if (!upstream.ok) {
       const errText = await upstream.text();
-      console.error('OpenRouter error', upstream.status, errText);
+      console.error('Anthropic error', upstream.status, errText);
       return res.status(502).json({ error: 'Upstream model request failed.' });
     }
 
     const data = await upstream.json();
-    const raw = data?.choices?.[0]?.message?.content ?? '';
+    const raw = '{' + (data?.content?.[0]?.text ?? '');
 
     let parsed;
     try {
